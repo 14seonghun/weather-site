@@ -1,132 +1,172 @@
-"""10월 기온: 예측 vs 실제 — Flask 웹사이트
+"""개인 대시보드 — 날씨(서울/평택) · 주식/증시 요약 · 10월 기온 비교
 
 로컬 실행:  python app.py   →  http://localhost:8000
 배포(Render): Start Command = gunicorn app:app
+  Render 환경변수(Environment)에 꼭 설정하세요:
+    APP_PASSWORD = 접속 비밀번호
+    SECRET_KEY   = 아무 긴 랜덤 문자열 (로그인 쿠키 서명용)
 """
-import calendar
-import json
+import datetime as dt
+import hashlib
+import hmac
+import os
 import threading
 import time
-import urllib.error
-import urllib.request
+from functools import wraps
 
-from flask import Flask, render_template
+from flask import Flask, redirect, render_template, request, session, url_for
 
-# ===== 설정 (여기만 바꾸면 됩니다) =====
-LOCATION = {"name": "서울", "latitude": 37.5665, "longitude": 126.978}
-TRAIN_YEARS = [2023, 2024, 2025]  # 예측에 사용할 과거 연도
-TARGET_YEAR = 2026                # 비교할 올해
-MONTH = 10                        # 10월
-SMOOTH_WINDOW = 5                 # 이동평균 일수 (홀수)
-CACHE_SECONDS = 6 * 60 * 60       # 데이터를 다시 받아오는 주기 (6시간)
+import stocks
+import weather
+
+# ===== 설정 =====
+# 비밀번호는 환경변수 APP_PASSWORD 가 있으면 그 값을, 없으면 아래 기본값을 사용합니다.
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "yh1029")
+WEATHER_CACHE_SECONDS = 30 * 60      # 예보: 30분마다 갱신
+STOCK_CACHE_SECONDS = 5 * 60         # 주가: 5분마다 갱신
+OCTOBER_CACHE_SECONDS = 6 * 60 * 60  # 10월 비교: 6시간마다 갱신
+ERROR_CACHE_SECONDS = 60             # 실패했을 때 1분간은 다시 요청하지 않음
 
 app = Flask(__name__)
+# SECRET_KEY 가 없으면 비밀번호에서 만든 값을 사용 (gunicorn 워커끼리 같은 값이 되도록)
+app.secret_key = os.environ.get("SECRET_KEY") or hashlib.sha256(
+    ("weather-site:" + APP_PASSWORD).encode()).hexdigest()
+app.config.update(
+    PERMANENT_SESSION_LIFETIME=dt.timedelta(days=7),  # 7일 동안 로그인 유지
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER")),  # Render(https)에서는 보안 쿠키
+)
 
 
-# 1. 가져오기: Open-Meteo에서 해당 연도 10월의 일평균 기온
-def fetch_month(year):
-    last_day = calendar.monthrange(year, MONTH)[1]
-    url = (
-        "https://archive-api.open-meteo.com/v1/archive"
-        f"?latitude={LOCATION['latitude']}&longitude={LOCATION['longitude']}"
-        f"&start_date={year}-{MONTH:02d}-01&end_date={year}-{MONTH:02d}-{last_day:02d}"
-        "&daily=temperature_2m_mean&timezone=Asia%2FSeoul"
-    )
-    try:
-        with urllib.request.urlopen(url, timeout=30) as res:
-            data = json.load(res)
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"{year}년 데이터 요청 실패 ({e})") from e
-    return data["daily"]["temperature_2m_mean"]  # index 0 = 1일
+# ---------- 캐시: 접속할 때마다 외부 API를 부르지 않도록 ----------
+_cache = {}
+_locks = {}
+_locks_guard = threading.Lock()
 
 
-# 2. 가공하기
-def mean(values):
-    vals = [v for v in values if v is not None]
-    return sum(vals) / len(vals) if vals else None
+def cached(key, seconds, fn):
+    with _locks_guard:
+        lock = _locks.setdefault(key, threading.Lock())
+    with lock:
+        entry = _cache.get(key)
+        if entry and time.time() < entry["expires"]:
+            if entry["error"]:
+                raise RuntimeError(entry["error"])
+            return entry["value"]
+        try:
+            value = fn()
+        except Exception as e:
+            _cache[key] = {"value": None, "error": str(e), "expires": time.time() + ERROR_CACHE_SECONDS}
+            raise
+        _cache[key] = {"value": value, "error": None, "expires": time.time() + seconds}
+        return value
 
 
-def moving_average(arr, w):
-    half = w // 2
-    return [mean(arr[max(0, i - half): i + half + 1]) for i in range(len(arr))]
+# ---------- 로그인 ----------
+def login_required(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not session.get("authed"):
+            target = request.full_path if request.query_string else request.path
+            return redirect(url_for("login", next=target))
+        return view(*args, **kwargs)
+    return wrapper
 
 
-def predict(history):
-    """과거 여러 해의 같은 날짜 평균 → 이동평균으로 부드럽게"""
-    days = len(history[0])
-    avg = [mean([year[d] for year in history]) for d in range(days)]
-    return moving_average(avg, SMOOTH_WINDOW)
+def _safe_next(target):
+    # 외부 사이트로 튕겨나가지 않도록 내부 경로만 허용
+    if target and target.startswith("/") and not target.startswith("//"):
+        return target
+    return url_for("weather_page")
 
 
-def compare(predicted, actual):
-    pairs = [(p, a) for p, a in zip(predicted, actual) if p is not None and a is not None]
-    if not pairs:
-        raise RuntimeError(f"{TARGET_YEAR}년 {MONTH}월 실제 데이터가 아직 없습니다.")
-    n = len(pairs)
-    return {
-        "pred_avg": sum(p for p, _ in pairs) / n,
-        "actual_avg": sum(a for _, a in pairs) / n,
-        "diff_avg": sum(a - p for p, a in pairs) / n,
-        "mae": sum(abs(a - p) for p, a in pairs) / n,
-    }
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        if hmac.compare_digest(password.encode(), APP_PASSWORD.encode()):
+            session.clear()
+            session["authed"] = True
+            session.permanent = True
+            return redirect(_safe_next(request.args.get("next")))
+        time.sleep(1)  # 비밀번호 무작위 대입을 느리게
+        error = "비밀번호가 올바르지 않습니다."
+    return render_template("login.html", error=error), (401 if error else 200)
 
 
-def build_result():
-    history = [fetch_month(y) for y in TRAIN_YEARS]
-    actual = fetch_month(TARGET_YEAR)
-    predicted = predict(history)
-    stats = compare(predicted, actual)
-
-    rows = []
-    for i, (p, a) in enumerate(zip(predicted, actual)):
-        diff = None if p is None or a is None else a - p
-        rows.append({"label": f"{MONTH}/{i + 1}", "p": p, "a": a, "diff": diff})
-
-    return {
-        "stats": stats,
-        "rows": rows,
-        "chart": {
-            "labels": [r["label"] for r in rows],
-            "predicted": predicted,
-            "actual": actual,
-            "actualLabel": f"{TARGET_YEAR}년 실제",
-        },
-    }
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 
-# 데이터 캐시: 접속할 때마다 API를 부르지 않도록 일정 시간 저장
-_cache = {"time": 0, "result": None}
-_lock = threading.Lock()
-
-
-def get_result():
-    with _lock:
-        if _cache["result"] is None or time.time() - _cache["time"] > CACHE_SECONDS:
-            _cache["result"] = build_result()
-            _cache["time"] = time.time()
-        return _cache["result"]
-
-
-# 템플릿에서 쓰는 숫자 형식
+# ---------- 템플릿 숫자 형식 ----------
 @app.template_filter("num")
-def num(n):
-    return "-" if n is None else f"{n:.1f}"
+def num(n, digits=1):
+    return "-" if n is None else f"{n:.{digits}f}"
 
 
 @app.template_filter("signed")
-def signed(n):
-    return "-" if n is None else f"{n:+.1f}"
+def signed(n, digits=1):
+    return "-" if n is None else f"{n:+.{digits}f}"
 
 
-# 3. 보여주기
+@app.template_filter("updown")
+def updown(n):
+    if n is None or n == 0:
+        return ""
+    return "up" if n > 0 else "down"
+
+
+# ---------- 페이지 ----------
 @app.route("/")
-def index():
-    common = {"location": LOCATION, "train_years": TRAIN_YEARS,
-              "target_year": TARGET_YEAR, "month": MONTH}
+@login_required
+def weather_page():
     try:
-        return render_template("index.html", **common, **get_result(), error=None)
-    except Exception as e:  # 오류도 웹페이지로 보여줌
-        return render_template("index.html", **common, error=str(e)), 500
+        cities = cached("weather", WEATHER_CACHE_SECONDS, weather.weekly_forecast)
+        return render_template("weather.html", page="weather", cities=cities, error=None)
+    except Exception as e:
+        return render_template("weather.html", page="weather", cities=[], error=str(e)), 500
+
+
+@app.route("/stocks")
+@login_required
+def stocks_page():
+    # ?q=삼성전자, AAPL 처럼 요청. 마지막으로 조회한 목록은 기억해 둠
+    if "q" in request.args:
+        session["watchlist"] = request.args["q"]
+    text = session.get("watchlist", stocks.DEFAULT_WATCHLIST)
+    symbols = stocks.parse_watchlist(text)
+
+    try:
+        market = cached("market", STOCK_CACHE_SECONDS, stocks.market_overview)
+        market_error = None
+    except Exception as e:
+        market, market_error = None, str(e)
+
+    quotes = []
+    for s in symbols:
+        try:
+            quotes.append(cached(f"quote:{s.lower()}", STOCK_CACHE_SECONDS, lambda s=s: stocks.quote(s)))
+        except Exception as e:
+            quotes.append({"query": s, "error": str(e)})
+
+    return render_template("stocks.html", page="stocks", query=text, market=market,
+                           market_error=market_error, quotes=quotes,
+                           max_symbols=stocks.MAX_SYMBOLS)
+
+
+@app.route("/october")
+@login_required
+def october_page():
+    try:
+        result = cached("october", OCTOBER_CACHE_SECONDS, weather.october_comparison)
+        return render_template("october.html", page="october", error=None, **result)
+    except Exception as e:
+        return render_template("october.html", page="october", error=str(e),
+                               month=weather.MONTH), 500
 
 
 if __name__ == "__main__":

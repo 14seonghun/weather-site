@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}주식 · 증시 요약{% endblock %}
+{% block head %}
+<style>
+  form.search { display: flex; gap: 8px; margin: 16px 0 4px; flex-wrap: wrap; }
+  form.search input { flex: 1; min-width: 220px; padding: 10px 12px; font-size: 16px;
+                      border: 1px solid #ccd; border-radius: 8px; }
+  form.search button { padding: 10px 18px; font-size: 16px; border: 0; border-radius: 8px;
+                       background: #2980b9; color: #fff; cursor: pointer; }
+  .idx .val { font-size: 20px; font-weight: bold; }
+  .stock { margin-bottom: 16px; }
+  .stock .head { display: flex; justify-content: space-between; align-items: baseline;
+                 flex-wrap: wrap; gap: 8px; }
+  .stock .price { font-size: 26px; font-weight: bold; }
+  .stock .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+                 gap: 8px; margin: 12px 0; font-size: 14px; }
+  .stock .grid span { display: block; color: #777; font-size: 12px; }
+  .spark { height: 70px; }
+  .stock p { line-height: 1.6; margin: 8px 0 0; }
+</style>
+{% endblock %}
+{% block content %}
+  <h1>주식 · 증시 요약</h1>
+  <p class="sub">미국 / 한국 — 데이터: Yahoo Finance (5분마다 갱신, 실시간이 아닌 지연 시세일 수 있음)</p>
+
+  <h2>🌐 증시 현황</h2>
+  {% if market_error %}
+    <p class="error">오류: {{ market_error }}</p>
+  {% elif market %}
+    <p class="summary">{{ market.headline }}</p>
+    {% for region, items in market.groups.items() %}
+      <h3>{{ '🇺🇸' if region == '미국' else '🇰🇷' }} {{ region }}</h3>
+      <div class="cards">
+        {% for i in items %}
+          <div class="card idx">
+            <span class="label">{{ i.name if not i.error else i.query }}</span>
+            {% if i.error %}<span class="error">{{ i.error }}</span>
+            {% else %}
+              <div class="val">{{ "{:,.2f}".format(i.price) }}</div>
+              <div class="{{ i.change_pct | updown }}">{{ "{:+,.2f}".format(i.change) }} ({{ i.change_pct | signed(2) }}%)</div>
+              <div class="muted">{{ i.updated }} 기준</div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endfor %}
+  {% endif %}
+
+  <h2>⭐ 관심 종목</h2>
+  <form class="search" method="get">
+    <input name="q" value="{{ query }}" placeholder="예: 삼성전자, 005930, AAPL, 테슬라">
+    <button type="submit">조회</button>
+  </form>
+  <p class="muted">쉼표로 구분해 최대 {{ max_symbols }}개까지. 미국은 티커(AAPL), 한국은 6자리 종목코드(005930) 또는 이름(삼성전자). 마지막 조회 목록은 기억됩니다.</p>
+
+  {% for s in quotes %}
+    <section class="card stock">
+      {% if s.error %}
+        <strong>{{ s.query }}</strong> — <span class="error">{{ s.error }}</span>
+      {% else %}
+        <div class="head">
+          <div><strong>{{ s.name }}</strong> <span class="muted">{{ s.symbol }} · {{ s.exchange }}</span></div>
+          <div class="muted">{{ s.updated }} 기준</div>
+        </div>
+        <div>
+          <span class="price">{{ s.price_text }}</span>
+          <span class="{{ s.change_pct | updown }}">&nbsp;{{ s.change_pct | signed(2) }}%</span>
+        </div>
+        <div class="grid">
+          <div><span>1개월</span><b class="{{ s.ret_1m | updown }}">{{ s.ret_1m | signed }}%</b></div>
+          <div><span>3개월</span><b class="{{ s.ret_3m | updown }}">{{ s.ret_3m | signed }}%</b></div>
+          <div><span>1년</span><b class="{{ s.ret_1y | updown }}">{{ s.ret_1y | signed }}%</b></div>
+          <div><span>52주 최고</span><b>{{ s.high52_text }}</b></div>
+          <div><span>52주 최저</span><b>{{ s.low52_text }}</b></div>
+        </div>
+        <div class="spark"><canvas data-spark="{{ s.spark | tojson | forceescape }}" data-up="{{ 'true' if s.ret_3m is none or s.ret_3m >= 0 else 'false' }}"></canvas></div>
+        <p class="summary">{{ s.summary }}</p>
+      {% endif %}
+    </section>
+  {% endfor %}
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    document.querySelectorAll("canvas[data-spark]").forEach(function (el) {
+      const data = JSON.parse(el.dataset.spark);
+      const color = el.dataset.up === "true" ? "#c0392b" : "#2471a3";
+      new Chart(el, {
+        type: "line",
+        data: { labels: data.map((_, i) => i), datasets: [{ data, borderColor: color,
+                borderWidth: 1.5, pointRadius: 0, tension: 0.2 }] },
+        options: { responsive: true, maintainAspectRatio: false, animation: false,
+                   plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                   scales: { x: { display: false }, y: { display: false } } },
+      });
+    });
+  </script>
+{% endblock %}

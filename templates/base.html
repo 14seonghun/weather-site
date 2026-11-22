@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}내 대시보드{% endblock %}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+           background: #f4f6f9; color: #222; }
+    nav { background: #1f2d3d; }
+    nav .inner { max-width: 1000px; margin: 0 auto; padding: 0 16px; display: flex;
+                 gap: 4px; align-items: center; overflow-x: auto; }
+    nav a { color: #cfd8e3; text-decoration: none; padding: 14px 12px; white-space: nowrap; }
+    nav a.active { color: #fff; font-weight: bold; border-bottom: 3px solid #f1c40f; }
+    nav a.logout { margin-left: auto; font-size: 14px; }
+    main { max-width: 1000px; margin: 0 auto; padding: 28px 16px 64px; }
+    h1 { margin: 0 0 4px; }
+    h2 { margin: 32px 0 12px; }
+    .sub { color: #666; margin-top: 0; }
+    .card, .chart-box { background: #fff; border-radius: 10px; padding: 16px;
+                        box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+             gap: 12px; margin: 16px 0; }
+    .card .label { display: block; font-size: 13px; color: #777; margin-bottom: 6px; }
+    .card strong { font-size: 22px; }
+    .message { font-weight: bold; }
+    .error { color: #c0392b; font-weight: bold; }
+    .summary { background: #fffbe6; border-left: 4px solid #f1c40f; padding: 12px 14px;
+               border-radius: 6px; line-height: 1.6; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px;
+            overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    th, td { padding: 8px 12px; text-align: center; border-bottom: 1px solid #eee; white-space: nowrap; }
+    th { background: #eef1f6; }
+    .up { color: #c0392b; }     /* 상승: 빨강 */
+    .down { color: #2471a3; }   /* 하락: 파랑 */
+    .muted { color: #888; font-size: 13px; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <nav><div class="inner">
+    <a href="{{ url_for('weather_page') }}" class="{{ 'active' if page == 'weather' }}">🌤️ 주간 날씨</a>
+    <a href="{{ url_for('stocks_page') }}" class="{{ 'active' if page == 'stocks' }}">📈 주식/증시</a>
+    <a href="{{ url_for('october_page') }}" class="{{ 'active' if page == 'october' }}">📊 10월 기온 비교</a>
+    <a href="{{ url_for('logout') }}" class="logout">로그아웃</a>
+  </div></nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

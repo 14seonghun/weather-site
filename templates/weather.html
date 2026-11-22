@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}주간 날씨 · 서울/평택{% endblock %}
+{% block head %}
+<style>
+  .city { margin-bottom: 36px; }
+  .now { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .now .icon { font-size: 44px; }
+  .now .temp { font-size: 36px; font-weight: bold; }
+  .week { display: grid; grid-template-columns: repeat(7, minmax(110px, 1fr)); gap: 8px;
+          overflow-x: auto; margin-top: 12px; }
+  .day { background: #fff; border-radius: 10px; padding: 12px 8px; text-align: center;
+         box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .day.today { outline: 2px solid #f1c40f; }
+  .day .icon { font-size: 30px; margin: 6px 0; }
+  .day .text { font-size: 13px; color: #555; min-height: 18px; }
+  .day .t { margin-top: 6px; }
+  .day .pop { font-size: 13px; color: #2471a3; margin-top: 4px; }
+</style>
+{% endblock %}
+{% block content %}
+  <h1>일주일 날씨 예보</h1>
+  <p class="sub">서울 · 평택 — 데이터: Open-Meteo (30분마다 갱신)</p>
+
+  {% if error %}
+    <p class="error">오류: {{ error }}</p>
+  {% endif %}
+
+  {% for c in cities %}
+    <section class="city">
+      <h2>📍 {{ c.name }}</h2>
+      <div class="card now">
+        <span class="icon">{{ c.current.icon }}</span>
+        <span class="temp">{{ c.current.temp | num }}°C</span>
+        <span>{{ c.current.text }}<br>
+          <span class="muted">습도 {{ c.current.humidity or '-' }}% · 바람 {{ c.current.wind | num }} km/h</span></span>
+      </div>
+      <p class="summary">{{ c.summary }}</p>
+      <div class="week">
+        {% for d in c.days %}
+          <div class="day {{ 'today' if d.is_today }}">
+            <div><strong>{{ '오늘' if d.is_today else d.label }}</strong></div>
+            <div class="icon">{{ d.icon }}</div>
+            <div class="text">{{ d.text }}</div>
+            <div class="t"><span class="up">{{ d.tmax | num(0) }}°</span> / <span class="down">{{ d.tmin | num(0) }}°</span></div>
+            <div class="pop">☔ {{ d.pop if d.pop is not none else '-' }}%{% if d.rain %} · {{ d.rain | num }}mm{% endif %}</div>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endfor %}
+{% endblock %}
