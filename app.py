@@ -3,8 +3,8 @@
 로컬 실행:  python app.py   →  http://localhost:8000
 배포(Render): Start Command = gunicorn app:app
   Render 환경변수(Environment)에 꼭 설정하세요:
-    APP_PASSWORD = 접속 비밀번호
-    SECRET_KEY   = 아무 긴 랜덤 문자열 (로그인 쿠키 서명용)
+    pw         = 접속 비밀번호
+    SECRET_KEY = (선택) 아무 긴 랜덤 문자열 (로그인 쿠키 서명용)
 """
 import datetime as dt
 import hashlib
@@ -19,9 +19,26 @@ from flask import Flask, redirect, render_template, request, session, url_for
 import stocks
 import weather
 
+
+def _load_dotenv(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
+    """로컬 실행용: .env 파일(깃에 올라가지 않음)의 KEY=VALUE 를 환경변수로 읽어옴"""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
 # ===== 설정 =====
-# 비밀번호는 환경변수 APP_PASSWORD 가 있으면 그 값을, 없으면 아래 기본값을 사용합니다.
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "yh1029")
+# 비밀번호는 코드에 적지 않고 환경변수 pw 에서 읽습니다.
+#   Render: Environment 에 key=pw / value=비밀번호
+#   로컬:   이 폴더의 .env 파일에  pw=비밀번호
+APP_PASSWORD = os.environ.get("pw", "")
 WEATHER_CACHE_SECONDS = 30 * 60      # 예보: 30분마다 갱신
 STOCK_CACHE_SECONDS = 5 * 60         # 주가: 5분마다 갱신
 OCTOBER_CACHE_SECONDS = 6 * 60 * 60  # 10월 비교: 6시간마다 갱신
@@ -86,6 +103,9 @@ def login():
     error = None
     if request.method == "POST":
         password = request.form.get("password", "")
+        if not APP_PASSWORD:
+            error = "서버에 비밀번호(pw 환경변수)가 설정되지 않았습니다."
+            return render_template("login.html", error=error), 503
         if hmac.compare_digest(password.encode(), APP_PASSWORD.encode()):
             session.clear()
             session["authed"] = True
