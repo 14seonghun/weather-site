@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}뉴스{% endblock %}
+{% block head %}
+<style>
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  ol.articles { margin: 0; padding: 0; list-style: none; }
+  ol.articles li { background: #fff; border-radius: 10px; padding: 12px 14px; margin-bottom: 8px;
+                   box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  ol.articles a { color: #1f2d3d; text-decoration: none; font-weight: bold; line-height: 1.45; }
+  ol.articles a:hover { text-decoration: underline; }
+  .notice { color: #a66b00; font-size: 14px; }
+  h2.part { margin-top: 32px; border-bottom: 2px solid #e3e8ee; padding-bottom: 6px; }
+</style>
+{% endblock %}
+
+{% macro section(s) %}
+  <section>
+    <h3>{{ s.icon }} {{ s.name }}</h3>
+    {% if not s.articles %}<p class="muted">기사를 불러오지 못했습니다.</p>{% endif %}
+    <ol class="articles">
+      {% for a in s.articles %}
+        <li>
+          <a href="{{ a.link }}" target="_blank" rel="noopener">{{ a.title }}</a>
+          <div class="muted">{{ a.source }}{% if a.date %} · {{ a.date.strftime('%m/%d %H:%M') }}{% endif %}</div>
+        </li>
+      {% endfor %}
+    </ol>
+  </section>
+{% endmacro %}
+
+{% block content %}
+  <h1>뉴스</h1>
+  <p class="sub">출처: Google 뉴스 (30분마다 갱신)</p>
+
+  {% if error %}
+    <p class="error">오류: {{ error }}</p>
+  {% else %}
+    {% if notice %}<p class="notice">⚠️ {{ notice }}</p>{% endif %}
+    {% for msg in data.errors %}<p class="notice">⚠️ {{ msg }}</p>{% endfor %}
+
+    <h2 class="part">💻 테크</h2>
+    <div class="cols">
+      {% for s in data.tech %}{{ section(s) }}{% endfor %}
+    </div>
+
+    <h2 class="part">📊 경제 · 정치</h2>
+    <div class="cols">
+      {% for s in data.other %}{{ section(s) }}{% endfor %}
+    </div>
+  {% endif %}
+{% endblock %}

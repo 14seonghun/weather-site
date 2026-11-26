@@ -16,8 +16,11 @@ from functools import wraps
 
 from flask import Flask, redirect, render_template, request, session, url_for
 
+import news
 import stocks
 import weather
+
+KST = dt.timezone(dt.timedelta(hours=9))
 
 
 def _load_dotenv(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
@@ -42,6 +45,7 @@ APP_PASSWORD = os.environ.get("pw", "")
 WEATHER_CACHE_SECONDS = 30 * 60      # 예보: 30분마다 갱신
 STOCK_CACHE_SECONDS = 5 * 60         # 주가: 5분마다 갱신
 OCTOBER_CACHE_SECONDS = 6 * 60 * 60  # 10월 비교: 6시간마다 갱신
+NEWS_CACHE_SECONDS = 30 * 60         # 뉴스 목록: 30분마다 갱신
 ERROR_CACHE_SECONDS = 60             # 실패했을 때 1분간은 다시 요청하지 않음
 
 app = Flask(__name__)
@@ -63,21 +67,38 @@ _locks_guard = threading.Lock()
 
 
 def cached(key, seconds, fn):
+    """fn() 결과를 seconds 동안 저장. 갱신에 실패하면 마지막으로 성공한 값을 대신 돌려줌."""
     with _locks_guard:
         lock = _locks.setdefault(key, threading.Lock())
     with lock:
-        entry = _cache.get(key)
-        if entry and time.time() < entry["expires"]:
-            if entry["error"]:
-                raise RuntimeError(entry["error"])
+        now = time.time()
+        entry = _cache.setdefault(key, {"value": None, "fetched": 0, "expires": 0,
+                                        "error": None, "retry_at": 0})
+        if entry["value"] is not None and now < entry["expires"]:
             return entry["value"]
+        if entry["error"] and now < entry["retry_at"]:   # 방금 실패했으면 잠시 쉬기
+            if entry["value"] is not None:
+                return entry["value"]
+            raise RuntimeError(entry["error"])
         try:
             value = fn()
         except Exception as e:
-            _cache[key] = {"value": None, "error": str(e), "expires": time.time() + ERROR_CACHE_SECONDS}
+            app.logger.warning("%s 갱신 실패: %s", key, e)
+            entry.update(error=str(e), retry_at=now + ERROR_CACHE_SECONDS)
+            if entry["value"] is not None:
+                return entry["value"]
             raise
-        _cache[key] = {"value": value, "error": None, "expires": time.time() + seconds}
+        entry.update(value=value, fetched=now, expires=now + seconds, error=None, retry_at=0)
         return value
+
+
+def stale_notice(key):
+    """마지막 갱신이 실패해 예전 데이터를 보여주는 중이면 안내 문구를 돌려줌"""
+    entry = _cache.get(key)
+    if entry and entry["error"] and entry["value"] is not None:
+        when = dt.datetime.fromtimestamp(entry["fetched"], KST).strftime("%m/%d %H:%M")
+        return f"최신 데이터를 받지 못해 {when}에 받은 데이터를 보여줍니다. ({entry['error']})"
+    return None
 
 
 # ---------- 로그인 ----------
@@ -146,9 +167,21 @@ def updown(n):
 def weather_page():
     try:
         cities = cached("weather", WEATHER_CACHE_SECONDS, weather.weekly_forecast)
-        return render_template("weather.html", page="weather", cities=cities, error=None)
+        return render_template("weather.html", page="weather", cities=cities, error=None,
+                               notice=stale_notice("weather"))
     except Exception as e:
         return render_template("weather.html", page="weather", cities=[], error=str(e)), 500
+
+
+@app.route("/news")
+@login_required
+def news_page():
+    try:
+        data = cached("news", NEWS_CACHE_SECONDS, news.fetch_articles)
+    except Exception as e:
+        return render_template("news.html", page="news", data=None, error=str(e)), 500
+    return render_template("news.html", page="news", data=data,
+                           notice=stale_notice("news"), error=None)
 
 
 @app.route("/stocks")

@@ -6,6 +6,7 @@
 import calendar
 import datetime as dt
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -41,12 +42,27 @@ WEATHER_CODES = {
 }
 
 
-def _get_json(url, what):
-    try:
-        with urllib.request.urlopen(url, timeout=20) as res:
-            return json.load(res)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
-        raise RuntimeError(f"{what} 요청 실패 ({e})") from e
+def _get_json(url, what, retries=2):
+    req = urllib.request.Request(url, headers={"User-Agent": "weather-site/1.0"})
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as res:
+                return json.load(res)
+        except urllib.error.HTTPError as e:
+            # Open-Meteo는 오류 이유를 JSON {"reason": "..."} 으로 알려줌
+            try:
+                reason = json.load(e).get("reason", "")
+            except Exception:
+                reason = ""
+            if (e.code == 429 or e.code >= 500) and attempt < retries:
+                time.sleep(2 * (attempt + 1))   # 요청 제한/서버 오류면 잠시 후 재시도
+                continue
+            raise RuntimeError(f"{what} 요청 실패 (HTTP {e.code}{': ' + reason if reason else ''})") from e
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+            if attempt < retries:
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise RuntimeError(f"{what} 요청 실패 ({e})") from e
 
 
 def describe(code):
@@ -54,16 +70,7 @@ def describe(code):
 
 
 # ---------- 1. 일주일 예보 ----------
-def _forecast_one(loc):
-    params = {
-        "latitude": loc["latitude"], "longitude": loc["longitude"], "timezone": TIMEZONE,
-        "forecast_days": 7,
-        "current": "temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m",
-        "daily": "weather_code,temperature_2m_max,temperature_2m_min,"
-                 "precipitation_probability_max,precipitation_sum",
-    }
-    url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(params)
-    data = _get_json(url, f"{loc['name']} 예보")
+def _parse_city(loc, data):
     if "daily" not in data:
         raise RuntimeError(f"{loc['name']} 예보 응답 형식이 예상과 다릅니다: {data.get('reason', data)}")
 
@@ -109,7 +116,22 @@ def _summarize_week(name, days):
 
 
 def weekly_forecast():
-    return [_forecast_one(loc) for loc in LOCATIONS]
+    # 여러 도시를 한 번의 요청으로 받아옴 (요청 횟수 절약)
+    params = {
+        "latitude": ",".join(str(l["latitude"]) for l in LOCATIONS),
+        "longitude": ",".join(str(l["longitude"]) for l in LOCATIONS),
+        "timezone": TIMEZONE, "forecast_days": 7,
+        "current": "temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m",
+        "daily": "weather_code,temperature_2m_max,temperature_2m_min,"
+                 "precipitation_probability_max,precipitation_sum",
+    }
+    url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(params)
+    data = _get_json(url, "날씨 예보")
+    if isinstance(data, dict):      # 도시가 하나면 목록이 아닌 객체로 옴
+        data = [data]
+    if not isinstance(data, list) or len(data) != len(LOCATIONS):
+        raise RuntimeError(f"날씨 예보 응답 형식이 예상과 다릅니다: {str(data)[:200]}")
+    return [_parse_city(loc, d) for loc, d in zip(LOCATIONS, data)]
 
 
 # ---------- 2. 10월 기온: 예측 vs 실제 (기존 기능) ----------

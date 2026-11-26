@@ -44,6 +44,7 @@
   <nav><div class="inner">
     <a href="{{ url_for('weather_page') }}" class="{{ 'active' if page == 'weather' }}">🌤️ 주간 날씨</a>
     <a href="{{ url_for('stocks_page') }}" class="{{ 'active' if page == 'stocks' }}">📈 주식/증시</a>
+    <a href="{{ url_for('news_page') }}" class="{{ 'active' if page == 'news' }}">📰 뉴스</a>
     <a href="{{ url_for('october_page') }}" class="{{ 'active' if page == 'october' }}">📊 10월 기온 비교</a>
     <a href="{{ url_for('logout') }}" class="logout">로그아웃</a>
   </div></nav>
